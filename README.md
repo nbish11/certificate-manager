@@ -54,23 +54,19 @@ Apache can easily be restarted from within the container, so we set the "sh.acme
 
 - `ACME_MAIN_DOMAIN` - The main/primary domain which you would have registered to represent you organisation. A certificate is always issued for this domain, but will only be deployed to containers that have this domain in their "sh.acme.domains" label.
 - `ACME_EMAIL` - Email address to use for registration and recovery contact.
-- `ACME_DNS_PROVIDER` - DNS provider to use for DNS-01 challenge. See acme.sh documentation, [DNS Providers List 1](https://github.com/acmesh-official/acme.sh/wiki/dnsapi) and [DNS Providers List 2](https://github.com/acmesh-official/acme.sh/wiki/dnsapi2) for supported providers.
+- `ACME_DNS_PROVIDER` - DNS provider to use for DNS-01 challenge. See acme.sh documentation, [DNS Providers 1](https://github.com/acmesh-official/acme.sh/wiki/dnsapi) and [DNS Providers 2](https://github.com/acmesh-official/acme.sh/wiki/dnsapi2) for supported providers.
 
-In addition, you must set the required environment variables for the DNS provider you are using, which is listed in the DNS Providers Lists.
+In addition, you must set the required environment variables for the DNS provider you are using, which are given in the DNS Providers lists.
 
 ### Optional
 
 - `ACME_STAGING` - Set to "true" to use the staging server for the chose CA. This is useful for testing, as the staging server does not have rate limits, and does not issue valid certificates. The default value is "false".
 - `ACME_CA` - The CA to use. The default value is "letsencrypt".
-- `ACME_DOMAINS_DOCKER_LABEL` - The Docker label to use for determining the domains list for the container. The default value is "sh.acme.domains".
-- `ACME_RELOAD_COMMAND_DOCKER_LABEL` - The Docker label to use for determining the reload command for the container. The default value is "sh.acme.reload_command".
-- `ACME_CERTIFICATE_PATH_DOCKER_LABEL` - The Docker label to use for determining the certificate path for the container. The default value is "sh.acme.certificate_path".
-- `ACME_DEPLOY_DOCKER_LABEL` - The Docker label to use for determining the certificate format deployment options for the container. The default value is "sh.acme.deploy".
 
 ## Docker labels
 
 - `sh.acme.domains` - A comma-separated list of domains that you want the certificate manager to manage for this container. The certificate manager will issue a certificate for each domain in the list, and deploy it to the container (one certificate per domain).
-- `sh.acme.reload_command` - The command to run after all certificates have been deployed. If the command starts with "docker", the certificate manager will run the docker command on the host, allowing you to issue commands like `docker compose restart myservice`. If the command does not start with "docker", the certificate manager will run the command inside the container, executing as the "root" user with the "/bin/sh" shell. This is useful if you want to reload a service inside the container, such as Apache `apachectl -k graceful`.
+- `sh.acme.reload_command` - The command to run after all certificates have been deployed to the container. If the command starts with "docker" (either in quotes or not) the certificate manager will run the docker command on the host, allowing you to issue commands like `docker restart` (the container id will be appended to the command). If the command does not start with "docker", the certificate manager will run the command inside the container, executing with the "/bin/sh" shell. This is useful if you want to reload a service from within the container, such as Apache `apachectl -k graceful`. Do not provide a label if you do not want the certificate manager to run a command after deploying certificates.
 - `sh.acme.certificate_path` - The directory within the container that the certificates should be deployed to. If this is not set, certificates will be deployed to the root directory, in the "certs" folder. E.g. "/certs".
 - `sh.acme.deploy` - One or more of the following values as a comma-separated list:
   - `pem` - Deploy the certiicate, key, and CA chain as a single file, with the domain name as the file name. E.g. "example.com.pem".
@@ -125,16 +121,63 @@ services:
 	  - mariadb
 ```
 
+## CLI
+
+The certificate manager can also be managed via the CLI. Currently, the CLI is missing most functionality, but the following documentation is provided for future reference and is unlikely to change.
+
+### Usage
+
+```cli
+certificate-manager <command> [options]
+```
+
+### Commands
+
+command | description
+--- | ---
+**start** | start the certificate manager service
+**stop** | stop the certificate manager service [not implemented yet]
+**restart** | restart the certificate manager service [not implemented yet]
+**status** | check the status of the certificate manager [not implemented yet]
+**help** | show CLI usage information
+**list** | list certificates that are managed by the certificate manager
+**update** | issue/renew certificates and deploy them to the containers
+**deploy** | deploy certificates to the containers
+**revoke** | revoke certificates for domains that are no longer managed by the certificate manager
+**issue** | issue certificates for domains that don't have a certificate yet
+**renew** | renew certificates for domains that have a certificate that is about to expire
+
+### Options
+
+option | description
+--- | ---
+**-h, --help** | show CLI usage information
+**--version** | show CLI version information
+**-v, --verbose** | enable debug mode [not implemented yet]
+**-q, --quiet** | enable quiet mode [not implemented yet]
+
+## Files/Directories
+
+Certificate Manager only uses two files/directories for itself:
+	- "/certificate-manager.sh": the script responsible for managing certificates.
+	- "/etc/environment": the file that contains the environment variables that are used by crond.
+
+Certificate Manager also uses [acme.sh]() internally for all its ACME needs, and in fact, Certificate Manager is just a wrapper around acme.sh. acme.sh stores all its binaries/libraries in the "/root/.acme.sh" directory, and all its config/certificate files in the "/acme.sh" directory. These are the default directories used by acme.sh. Certificate Manager also uses these directories.
+
+The "/acme.sh" directory is the only directory that should be mounted.
+
 ## Current Roadmap
 
-- [ ] Allow ACME Certificate Manager to be used as a dependency, and not require the certificate manager to depend upon the containers that it will be managing certificates for.
+- [ ] Allow other containers to depend on the certificate manager, so that the certificate manager can be used as a dependency.
 - [ ] Implement a propper healthcheck.
-- [ ] Implement a CLI for managing certificates manually.
-- [ ] Instead of using the acme.sh DNS prefixes for storeing credentials for the DNS providers, (CF_*, VULTR_*, etc), it would be better to use docker secrets, or a more uniform naming scheme for the environment variables (ACME_DNS_CREDENTIALS).
-- [ ] While having nothing to do with the ACME protocol, it would be nice to have a way to manage certificates for non-ACME domains, such as self-signed certificates, or certificates from a private CA.
+- [ ] Implement a proper CLI for service management.
+- [ ] Instead of using the acme.sh DNS prefixes for storing credentials for the DNS providers, (CF_*, VULTR_*, etc), it would be better to use docker secrets, or a more uniform naming scheme for the environment variables (ACME_DNS_CREDENTIALS).
+- [ ] While having nothing to do with the ACME protocol, it would be nice to have a way to manage certificates for non-ACME domains, such as self-signed certificates, or certificates from a private CA. (This would still be within the scope of the certificate manager, as it would still be managing certificates for docker containers.)
 - [ ] Add support to issue certificates using the docker hostname and domainname configuration of docker compose services.
 - [ ] Allow customisation of the certificate manager's home directory, and the location of the acme.sh script.
-- [ ] `docker deploy` support.
+- [ ] `docker deploy` (cluster/swarm) support.
+- [ ] Ability to control logging verbosity.
+- [ ] Better directory structure. The plan is to use the same directory structure as acme.sh, but this is not yet implemented.
 
 ## Things that are not planned
 
@@ -145,15 +188,18 @@ The certificate manager is designed to be managed by docker compose and to be do
 - HTTP-01 challenge support.
 - TLS-SNI-01 challenge support.
 - Wildcard certificate support.
+- CLI commands for individual certificate management. (Use acme.sh directly for this.)
+- Support for other ACME clients.
 
 ## Contributing
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct, and the process for submitting pull requests to us.
 
-## Contributors
+## Authors/Significant Contributors
 
-- [@nbish11]()
+- Everyone who has [contributed to acme.sh](https://github.com/acmesh-official/acme.sh/graphs/contributors) has indirectly contributed to this project.
+- [@nbish11]() - Initial work
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
