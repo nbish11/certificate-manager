@@ -36,6 +36,9 @@ DEPLOY_DOCKER_LABEL=${DEPLOY_DOCKER_LABEL:-"sh.acme.deploy"}
 DEFAULT_CONTAINER_CERTIFICATE_STORE=${DEFAULT_CONTAINER_CERTIFICATE_STORE:-"/certs"}
 DEFAULT_CERTIFICATE_DEPLOYMENT=${DEFAULT_CERTIFICATE_DEPLOYMENT:-"crt,key"}
 
+silence_output=false
+verbose=false
+
 # Return status codes:
 # 0: certificate is valid and up to date
 # 1: certificate has expired
@@ -576,7 +579,7 @@ help() {
 		echo "        --version  Show the version of the certificate manager"
 	fi
 	echo "    -h, --help     Show this help message"
-	echo "    -q, --quite    Disable all output"
+	echo "    -q, --quiet    Disable all output"
 	echo "    -v, --verbose  Enable verbose output"
 	echo ""
 
@@ -625,12 +628,20 @@ while [ $# -gt 0 ]; do
             help "$action"
 			exit 0
             ;;
+		-q|--quiet)
+			silence_output=true
+			;;
         *)
             # ignore any other options as they are passed directly to the action to handle
             ;;
     esac
     shift
 done
+
+# @todo: this should be done in a better way (maybe logfile)
+if [ "$silence_output" == true ]; then
+	exec > /dev/null 2>&1
+fi
 
 # set default CA server
 acme.sh --set-default-ca --server "$ACME_CA" --uninstall-cronjob >/dev/null 2>&1
