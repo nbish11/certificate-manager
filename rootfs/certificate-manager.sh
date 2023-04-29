@@ -82,6 +82,18 @@ renew_certificate() {
 	call_acme "renew" "$domain"
 }
 
+configure_acme() {
+	options="--server $ACME_CA"
+
+	if [ "$ACME_STAGING" == "true" ]; then
+		options="$options --staging"
+	fi
+
+	acme.sh --set-default-ca $options
+	acme.sh --uninstall-cronjob $options
+	acme.sh --register-account -m "$ACME_EMAIL" $options
+}
+
 call_acme() {
 	subcommand="--$1"
 	domain="--domain $2"
@@ -641,14 +653,7 @@ if [ "$silence_output" == true ]; then
 	exec > /dev/null 2>&1
 fi
 
-# set default CA server
-acme.sh --set-default-ca --server "$ACME_CA"
-
-# uninstall the old cron job
-acme.sh --uninstall-cronjob --server "$ACME_CA"
-
-# register an account with the ACME server
-acme.sh --register-account -m "$ACME_EMAIL" --server "$ACME_CA"
+configure_acme
 
 # Call the subcommand with any remaining arguments/options
 "${action}" "$@"
