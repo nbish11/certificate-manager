@@ -103,22 +103,22 @@ Currently, the image has not been setup to allow the certificate manager to be u
 ```yaml
 services:
   apache:
-	...
-	labels:
-	  sh.acme.domains: example.com,www.example.com
-	  sh.acme.reload_command: docker compose restart apache
+    ...
+    labels:
+      sh.acme.domains: example.com,www.example.com
+      sh.acme.reload_command: docker compose restart apache
 
   mariadb:
-	...
-	labels:
-	  sh.acme.domains: db.example.com
-	  sh.acme.reload_command: docker compose restart mariadb
+    ...
+    labels:
+      sh.acme.domains: db.example.com
+      sh.acme.reload_command: docker compose restart mariadb
 
   acme-certificate-manager:
-	...
-	depends_on:
-	  - apache
-	  - mariadb
+    ...
+    depends_on:
+      - apache
+      - mariadb
 ```
 
 ## CLI
