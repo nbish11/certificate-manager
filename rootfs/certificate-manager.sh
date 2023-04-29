@@ -644,7 +644,10 @@ if [ "$silence_output" == true ]; then
 fi
 
 # set default CA server
-acme.sh --set-default-ca --server "$ACME_CA" --uninstall-cronjob >/dev/null 2>&1
+acme.sh --set-default-ca --server "$ACME_CA"
+
+# uninstall the old cron job
+acme.sh --uninstall-cronjob
 
 # register an account with the ACME server
 acme.sh --register-account -m "$ACME_EMAIL" >/dev/null 2>&1
