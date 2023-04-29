@@ -14,7 +14,7 @@ LABEL org.opencontainers.image.base.name="docker.io/neilpang/acme.sh"
 RUN apk --no-cache add -f docker
 
 COPY rootfs /
-# RUN chmod +x /certificate-manager.sh
+RUN chown root:root /certificate-manager.sh && chmod +x /certificate-manager.sh
 
 ENTRYPOINT [ "/certificate-manager.sh" ]
 
