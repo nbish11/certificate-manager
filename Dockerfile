@@ -1,5 +1,5 @@
 # version 3.0.6
-FROM docker.io/neilpang/acme.sh:latest
+FROM neilpang/acme.sh@sha256:ae7c0d1138e0499f45cb8ebf65fdc31dd3c1247d7e9841fe0ec97501493435cf
 
 LABEL org.opencontainers.image.authors="Nathan Bishop <nbish11@hotmail.com>"
 LABEL org.opencontainers.image.url="https://github.com/nbish11/certificate-manager"
