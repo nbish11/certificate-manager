@@ -87,7 +87,7 @@ call_acme() {
 	subcommand="--$1"
 	domain="--domain $2"
 	dns="--dns dns_${ACME_DNS_PROVIDER}"
-	cmd="acme.sh $subcommand $domain $dns --debug 0 --force"
+	cmd="acme.sh $subcommand $domain $dns --debug 0 --force --server $ACME_CA"
 
 	if [ "$ACME_STAGING" == "true" ]; then
 		cmd="$cmd --staging"
@@ -441,7 +441,7 @@ print_restart_help_description() {
 # ----------------
 
 list() {
-	acme.sh --list --listraw | tail -n +2 | awk -F "|" '{
+	acme.sh --server "$ACME_CA" --list --listraw | tail -n +2 | awk -F "|" '{
 		expired="no";
 		renew_date=$6;
 		cmd="date +%s -d\""renew_date"\"";
@@ -647,10 +647,10 @@ fi
 acme.sh --set-default-ca --server "$ACME_CA"
 
 # uninstall the old cron job
-acme.sh --uninstall-cronjob
+acme.sh --uninstall-cronjob --server "$ACME_CA"
 
 # register an account with the ACME server
-acme.sh --register-account -m "$ACME_EMAIL" >/dev/null 2>&1
+acme.sh --register-account -m "$ACME_EMAIL" --server "$ACME_CA" >/dev/null 2>&1
 
 # Call the subcommand with any remaining arguments/options
 "${action}" "$@"
