@@ -70,7 +70,6 @@ issue_certificate() {
 	# revoke any previous certificates for domain if they exist
 	revoke_certificate "$domain" >/dev/null 2>&1
 	call_acme "issue" "$domain"
-	# acme.sh --issue --domain "$domain" --dns "dns_${ACME_DNS_PROVIDER}""$ACME_STAGING" --debug 0 --force
 }
 
 # 	Renew a certificate for the given domain. Certificates are renewed by
@@ -112,7 +111,6 @@ revoke_certificate() {
 
 	echo "Revoking certificate for $domain"
 	call_acme "revoke" "$domain" --remove
-	# acme.sh --revoke --remove --domain "$domain" --force >/dev/null 2>&1
 	find /acme.sh -type d -name "${domain}_ecc" -exec rm -rf {} \; >/dev/null 2>&1
 
 	return 0
