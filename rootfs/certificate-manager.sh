@@ -650,7 +650,7 @@ acme.sh --set-default-ca --server "$ACME_CA"
 acme.sh --uninstall-cronjob --server "$ACME_CA"
 
 # register an account with the ACME server
-acme.sh --register-account -m "$ACME_EMAIL" --server "$ACME_CA" >/dev/null 2>&1
+acme.sh --register-account -m "$ACME_EMAIL" --server "$ACME_CA"
 
 # Call the subcommand with any remaining arguments/options
 "${action}" "$@"
