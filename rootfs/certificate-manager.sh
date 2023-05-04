@@ -42,36 +42,49 @@ AUTO_UPGRADE=0
 silence_output=false
 verbose=false
 
-# Return status codes:
-# 0: certificate is valid and up to date
-# 1: certificate has expired
-# 2: certificate has not been issued
+# statuses:
+# 	deployed: certificate is valid and deployed to the correct containers
+# 	valid: certificate is valid and up to date, but has not been deployed to required containers
+# 	unused: certificate is valid but not used by any containers
+# 	expired: certificate has expired
+# 	missing: certificate has not been issued
 get_certificate_status() {
-  domain="$1"
+	domain="$1"
+    certs_list=$(acme.sh --server "$ACME_CA" --list | tail -n +2)
+	status="missing"
 
-  echo "Checking certificate status for $domain"
-
-  while IFS='|' read -r common_name expired sans; do
-	if [ "$common_name" == "$domain" ]; then
-		if [ "$expired" == "no" ]; then
-			echo "Certificate for $domain is valid and up to date"
-			return 0
+	# parse acme.sh's cert list to generate our own
+    while read -r main_domain key_length san_domains ca created_date renew_date; do
+		if [ "$main_domain" != "$domain" ]; then
+			continue
 		fi
 
-		echo "Certificate for $domain has expired"
-		return 1
-	fi
-  done < <(list)
+		current_date=$(date +%Y-%m-%dT%H:%M:%SZ)
 
-  echo "Certificate has not been issued for $domain"
-  return 2
+		# domain has a valid certificate
+		if [ "$current_date" \> "$created_date" ] && [ "$current_date" \< "$renew_date" ]; then
+			status="valid"
+
+			# but is not in our list of domains, so is unused
+			if ! echo "$domains" | grep -qw "$domain"; then
+				status="unused"
+			fi
+		# domain has an expired certificate or certificate about to expire
+		elif [ "$current_date" \> "$renew_date" ]; then
+			status="expired"
+		fi
+
+		break
+    done < <(echo "$certs_list")
+
+	echo "$status"
 }
 
 issue_certificate() {
 	domain="$1"
 
 	# revoke any previous certificates for domain if they exist
-	revoke_certificate "$domain" >/dev/null 2>&1
+	revoke_certificate "$domain" > /dev/null 2>&1
 	call_acme "issue" "$domain"
 }
 
@@ -98,10 +111,8 @@ configure_acme() {
 }
 
 call_acme() {
-	subcommand="--$1"
-	domain="--domain $2"
-	dns="--dns dns_${ACME_DNS_PROVIDER}"
-	cmd="acme.sh $subcommand $domain $dns --debug 0 --force --server $ACME_CA"
+	dns_provider="dns_${ACME_DNS_PROVIDER}"
+	cmd="acme.sh --$1 --domain $2 --dns $dns_provider --debug 0 --force --server $ACME_CA"
 
 	if [ "$ACME_STAGING" == "true" ]; then
 		cmd="$cmd --staging"
@@ -126,7 +137,7 @@ revoke_certificate() {
 
 	echo "Revoking certificate for $domain"
 	call_acme "revoke" "$domain" --remove
-	find /acme.sh -type d -name "${domain}_ecc" -exec rm -rf {} \; >/dev/null 2>&1
+	find /acme.sh -type d -name "${domain}_ecc" -exec rm -rf {} \; > /dev/null 2>&1
 
 	return 0
 }
@@ -203,21 +214,19 @@ list_domains() {
 
 # Return status codes:
 # 0: all certificates are valid and up to date
-# 1: at least one certificate has expired or has not been issued
+# 1: at least one certificate has expired or is missing
 check_certificates() {
 	domains=$(list_domains)
-	status=0
 
 	for domain in $domains; do
-		get_certificate_status "$domain"
-		certificate_status=$?
+		status=$(get_certificate_status "$domain")
 
-		if [ "$certificate_status" -ne 0 ]; then
-			status=1
+		if [ "$status" == "expired" ] || [ "$status" == "missing" ]; then
+			return 1
 		fi
 	done
 
-	return "$status"
+	return 0
 }
 
 is_certificate_deployed() {
@@ -261,7 +270,7 @@ deploy_certificate() {
 	container_cert_dir=$(get_container_certificate_store "$container")
 
 	if ! test -d "$acme_cert_dir"; then
-		echo "Certificate has not been issued for $domain. Skipping..."
+		echo "Certificate has not been issued for $domain. Skipping deployment..."
 		return 1
 	fi
 
@@ -284,15 +293,23 @@ deploy_certificate() {
 # ----------------
 
 issue() {
-	domains=$(list_domains)
+	domains=""
+
+	if [ "$1" == "-f" ] || [ "$1" == "--force" ]; then
+		echo "Re-issuing certificates for all domains..."
+		domains=$(list -H --fields=domain)
+	else
+		echo "Issuing certificates for missing domains..."
+		domains=$(list -H --fields=domain --status=missing)
+	fi
+
+	if [ -z "$domains" ]; then
+		echo "All required certificates have already been issued."
+		return 0
+	fi
 
 	for domain in $domains; do
-		get_certificate_status "$domain"
-		certificate_status=$?
-
-		if [ "$certificate_status" -eq 2 ]; then
-			issue_certificate "$domain"
-		fi
+		issue_certificate "$domain"
 	done
 }
 
@@ -309,15 +326,23 @@ print_issue_help_options() {
 # ----------------
 
 renew() {
-	domains=$(list_domains)
+	domains=""
+
+	if [ "$1" == "-f" ] || [ "$1" == "--force" ]; then
+		echo "Renewing certificates for all domains..."
+		domains=$(list -H --fields=domain)
+	else
+		echo "Renewing certificates for domains that are about to expire or have already expired..."
+		domains=$(list -H --fields=domain --status=expired)
+	fi
+
+	if [ -z "$domains" ]; then
+		echo "All certificates are valid and up to date."
+		return 0
+	fi
 
 	for domain in $domains; do
-		get_certificate_status "$domain"
-		certificate_status=$?
-
-		if [ "$certificate_status" -eq 1 ]; then
-			renew_certificate "$domain"
-		fi
+		renew_certificate "$domain"
 	done
 }
 
@@ -334,22 +359,24 @@ print_renew_help_options() {
 # ----------------
 
 revoke() {
-	domains=$(list_domains)
-	certs_revoked=0
+	domains=""
 
-	echo "Checking for unused certificates..."
-
-	while IFS='|' read -r common_name expired; do
-		if ! echo "$domains" | grep -qw "$common_name"; then
-			echo "Certificate for $common_name is no longer in use."
-			revoke_certificate "$common_name"
-			certs_revoked=1
-		fi
-	done < <(list)
-
-	if [ "$certs_revoked" -eq 0 ]; then
-		echo "No unused certificates found."
+	if [ "$1" == "-f" ] || [ "$1" == "--force" ]; then
+		echo "Revoking certificates for all domains..."
+		domains=$(list -H --fields=domain)
+	else
+		echo "Revoking certificates for domains that are no longer in use..."
+		domains=$(list -H --fields=domain --status=unused)
 	fi
+
+	if [ -z "$domains" ]; then
+		echo "No certificates to revoke - all are in use."
+		return 0
+	fi
+
+	for domain in $domains; do
+		revoke_certificate "$domain"
+	done
 }
 
 print_revoke_help_description() {
@@ -454,16 +481,65 @@ print_restart_help_description() {
 # ----------------
 
 list() {
-	acme.sh --server "$ACME_CA" --list --listraw | tail -n +2 | awk -F "|" '{
-		expired="no";
-		renew_date=$6;
-		cmd="date +%s -d\""renew_date"\"";
-		cmd | getline renew_timestamp;
-		close(cmd);
-		current_timestamp=strftime("%s");
-		if (renew_timestamp < current_timestamp) expired="yes";
-		printf "%s|%s|%s\n", $1, expired, $3
-	}'
+	domains=$(list_domains)
+
+	# check if any of the arguments contain a field list option
+	# where the field list is comma-separated
+	if echo "$@" | grep -qE -- "--fields=[^ ]+" ; then
+		fields=$(echo "$@" | grep -oE -- "--fields=[^ ]+" | cut -d= -f2 | tr ',' ' ')
+	else
+		fields="domain status sans"
+	fi
+
+	# Add header to output unless it's not wanted
+    if ! echo "$@" | grep -qE -- "-H|--no-header" ; then
+		header_line=""
+
+		if echo "$fields" | grep -qE -- "domain" ; then
+			header_line="${header_line} Domain"
+		fi
+
+		if echo "$fields" | grep -qE -- "status" ; then
+			header_line="${header_line} Status"
+		fi
+
+		if echo "$fields" | grep -qE -- "sans" ; then
+			header_line="${header_line} SANs"
+		fi
+
+		# trim leading space
+		echo "$header_line" | sed -E 's/^ //'
+    fi
+
+	# list domains and appropriate fields
+	for domain in $domains; do
+		status=$(get_certificate_status "$domain")
+		line=""
+
+		# check if filtering domains by status
+		if echo "$@" | grep -qE -- "--status=[^ ]+" ; then
+			status_filter=$(echo "$@" | grep -oE -- "--status=[^ ]+" | cut -d= -f2)
+
+			if [ "$status_filter" != "$status" ]; then
+				continue
+			fi
+		fi
+
+		if echo "$fields" | grep -qE -- "domain" ; then
+			line="${line} ${domain}"
+		fi
+
+		if echo "$fields" | grep -qE -- "status" ; then
+			line="${line} ${status}"
+		fi
+
+		if echo "$fields" | grep -qE -- "sans" ; then
+			line="${line} none"
+		fi
+
+		# trim leading space
+		echo "$line" | sed -E 's/^ //'
+	done;
 }
 
 print_list_help_description() {
@@ -487,20 +563,15 @@ print_list_help_options() {
 # - renew certificates for domains that have expired certificates or about to expire.
 # - deploy certificates to containers as needed.
 update() {
-	domains=$(list_domains)
-
-	revoke
-
-	for domain in $domains; do
-		get_certificate_status "$domain"
-		certificate_status=$?
-
-		if [ "$certificate_status" -eq 2 ]; then
-			issue_certificate "$domain"
-		elif [ "$certificate_status" -eq 1 ]; then
+	while read -r domain status sans; do
+		if [ "$status" == "unused" ]; then
+			revoke_certificate "$domain"
+		elif [ "$status" == "expired" ]; then
 			renew_certificate "$domain"
+		elif [ "$status" == "missing" ]; then
+			issue_certificate "$domain"
 		fi
-	done
+	done < <(list -H)
 
 	deploy
 }
@@ -634,6 +705,9 @@ if ! echo "$allowed_actions" | grep -qw "$action"; then
 	exit 1
 fi
 
+# arguments specific to the action
+action_args=""
+
 # parse global options
 while [ $# -gt 0 ]; do
     case $1 in
@@ -645,7 +719,8 @@ while [ $# -gt 0 ]; do
 			silence_output=true
 			;;
         *)
-            # ignore any other options as they are passed directly to the action to handle
+			# add to action_args for action to handle
+			action_args="$action_args $1"
             ;;
     esac
     shift
@@ -656,7 +731,8 @@ if [ "$silence_output" == true ]; then
 	exec > /dev/null 2>&1
 fi
 
-configure_acme
+# @todo run this only if the certificate manager is not configured
+configure_acme > /dev/null 2>&1
 
 # Call the subcommand with any remaining arguments/options
-"${action}" "$@"
+"${action}" "$action_args"
