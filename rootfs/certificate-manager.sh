@@ -35,6 +35,7 @@ RELOAD_COMMAND_DOCKER_LABEL=${RELOAD_COMMAND_DOCKER_LABEL:-"sh.acme.reload_comma
 DEPLOY_DOCKER_LABEL=${DEPLOY_DOCKER_LABEL:-"sh.acme.deploy"}
 DEFAULT_CONTAINER_CERTIFICATE_STORE=${DEFAULT_CONTAINER_CERTIFICATE_STORE:-"/certs"}
 DEFAULT_CERTIFICATE_DEPLOYMENT=${DEFAULT_CERTIFICATE_DEPLOYMENT:-"crt,key"}
+SUPPORTED_DEPLOYMENT_TYPES="crt key pem ca csr"
 
 # Do not let acme.sh auto-upgrade itself
 AUTO_UPGRADE=0
@@ -80,12 +81,36 @@ get_certificate_status() {
 	echo "$status"
 }
 
+ensure_all_deployment_types_exist_locally() {
+	domain="$1"
+	acme_cert_dir="/acme.sh/${domain}_ecc"
+	# "csr" and "key" deployment types already have the correct filenames
+
+	# make sure the "crt" deployment type is always available
+	if ! test -f "$acme_cert_dir/$domain.crt"; then
+		cp "$acme_cert_dir/$domain.cer" "$acme_cert_dir/$domain.crt"
+	fi
+
+	# make sure the "pem" deployment type is always available
+	if ! test -f "$acme_cert_dir/$domain.pem"; then
+		cp "$acme_cert_dir/$domain.key" "$acme_cert_dir/$domain.pem"
+		cat "$acme_cert_dir/$domain.cer" >> "$acme_cert_dir/$domain.pem"
+		cat "$acme_cert_dir/ca.cer" >> "$acme_cert_dir/$domain.pem"
+	fi
+
+	# make sure the "ca" deployment type is always available
+	if ! test -f "$acme_cert_dir/$domain.ca"; then
+		cp "$acme_cert_dir/ca.cer" "$acme_cert_dir/$domain.ca"
+	fi
+}
+
 issue_certificate() {
 	domain="$1"
 
 	# revoke any previous certificates for domain if they exist
 	revoke_certificate "$domain" > /dev/null 2>&1
 	call_acme "issue" "$domain"
+	ensure_all_deployment_types_exist_locally "$domain"
 }
 
 # 	Renew a certificate for the given domain. Certificates are renewed by
@@ -96,6 +121,7 @@ renew_certificate() {
 
 	echo "Renewing certificate for $domain"
 	call_acme "renew" "$domain"
+	ensure_all_deployment_types_exist_locally "$domain"
 }
 
 configure_acme() {
@@ -229,63 +255,63 @@ check_certificates() {
 	return 0
 }
 
-is_certificate_deployed() {
-	domain="$1"
-	container="$2"
-	acme_cert_dir="/acme.sh/${domain}_ecc"
-	container_cert_dir=$(get_container_certificate_store "$container")
-
-	if ! test -d "$acme_cert_dir"; then
-		return 1
-	fi
-
-	if ! docker exec "$container" test -d "$container_cert_dir"; then
-		return 1
-	fi
-
-	if ! docker exec "$container" test -f "$container_cert_dir/$domain.crt"; then
-		return 1
-	fi
-
-	if ! docker exec "$container" test -f "$container_cert_dir/$domain.key"; then
-		return 1
-	fi
-
-	# Check if the certificate files are different to the ones in the acme.sh directory
-    if ! diff -q "$acme_cert_dir/$domain.cer" <(docker exec "$container" cat "$container_cert_dir/$domain.crt"); then
-        return 1
-    fi
-
-    if ! diff -q "$acme_cert_dir/$domain.key" <(docker exec "$container" cat "$container_cert_dir/$domain.key"); then
-        return 1
-    fi
-
-	return 0
-}
-
 deploy_certificate() {
 	domain="$1"
 	container="$2"
 	acme_cert_dir="/acme.sh/${domain}_ecc"
 	container_cert_dir=$(get_container_certificate_store "$container")
+	expected_deployment_types=$(get_docker_label "$container" "$DEPLOY_DOCKER_LABEL" | tr ',' ' ')
+	some_certs_deployed=0
 
 	if ! test -d "$acme_cert_dir"; then
-		echo "Certificate has not been issued for $domain. Skipping deployment..."
+		echo "A certificate has not been issued for $domain. Cannot deploy..."
 		return 1
 	fi
 
-	echo "Deploying certificate for $domain to $container"
-
-	# if the container certificate directory does not exist, create it
 	if ! docker exec "$container" test -d "$container_cert_dir"; then
 		echo "Certificate directory $container_cert_dir in $container does not exist. Creating it..."
 		docker exec -u root "$container" mkdir -p "$container_cert_dir"
 	fi
 
-	echo "Copying certificates for $domain to $container"
+	for deployment_type in $SUPPORTED_DEPLOYMENT_TYPES; do
+		local_cert_file="$acme_cert_dir/$domain.$deployment_type"
+		container_cert_file="$container_cert_dir/$domain.$deployment_type"
 
-	docker cp "$acme_cert_dir/$domain.cer" "$container:$container_cert_dir/$domain.crt"
-	docker cp "$acme_cert_dir/$domain.key" "$container:$container_cert_dir/$domain.key"
+		# if certificate should not be deployed...
+		if ! echo "$expected_deployment_types" | grep -q "$deployment_type"; then
+
+			# and exists in container when it shouldn't
+			if docker exec "$container" test -f "$container_cert_file"; then
+				echo "Unused certificate $container_cert_file found. Deleting..."
+				docker exec -u root "$container" rm -f "$container_cert_file"
+			fi
+
+			# no need to run reload command since the certificate is not used
+			continue
+		fi
+
+		# certificate should be deployed and does not exist in container
+		if ! docker exec "$container" test -f "$container_cert_file"; then
+			echo "Certificate $container_cert_file not found. Copying over..."
+			some_certs_deployed=1
+			docker cp "$local_cert_file" "$container:$container_cert_file"
+			continue
+		fi
+
+		# certificate should be deployed and exists in container, but is different
+		if ! diff -q "$local_cert_file" <(docker exec "$container" cat "$container_cert_file") >/dev/null 2>&1; then
+			echo "Certificate $container_cert_file is different. Replacing..."
+			some_certs_deployed=1
+			docker cp "$local_cert_file" "$container:$container_cert_file"
+			continue
+		fi
+	done
+
+	if [ "$some_certs_deployed" -eq 1 ]; then
+		run_reload_command "$container"
+	fi
+
+	return 0
 }
 
 # ----------------
@@ -295,7 +321,7 @@ deploy_certificate() {
 issue() {
 	domains=""
 
-	if [ "$1" == "-f" ] || [ "$1" == "--force" ]; then
+	if echo "$@" | grep -qE -- "-f|--force"; then
 		echo "Re-issuing certificates for all domains..."
 		domains=$(list -H --fields=domain)
 	else
@@ -394,27 +420,9 @@ print_revoke_help_options() {
 
 deploy() {
 	for container in $(get_containers); do
-		some_certs_deployed=0
-
 		for domain in $(get_domain_list_for_container "$container"); do
-			if is_certificate_deployed "$domain" "$container"; then
-				echo "Certificate for $domain already deployed. Skipping deployment..."
-				continue
-			fi
-
-			# otherwise, deploy certificate but don't reload container yet
-			some_certs_deployed=1
 			deploy_certificate "$domain" "$container"
 		done
-
-		if [ "$some_certs_deployed" -eq 0 ]; then
-			echo "No certificates need to be deployed for container $container. Skipping reload..."
-			continue
-		fi
-
-		# reload container if reload command is set
-		# and at least one certificate was deployed
-		run_reload_command "$container"
 	done
 }
 
@@ -574,6 +582,7 @@ update() {
 	done < <(list -H)
 
 	deploy
+	echo "All certificates are up to date and have been deployed correctly"
 }
 
 print_update_help_description() {
