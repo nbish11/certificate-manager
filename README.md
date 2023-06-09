@@ -178,6 +178,7 @@ The "/acme.sh" directory is the only directory that should be mounted.
 - [ ] `docker deploy` (cluster/swarm) support.
 - [ ] Ability to control logging verbosity.
 - [ ] Better directory structure. The plan is to use the same directory structure as acme.sh, but this is not yet implemented.
+- [ ] Allow for each certificate to have its own deployment types. (Currently, the deployment types are global, and apply to all certificates.) Something like this: `- sh.acme.domains=example.com:crt,key;mail.example.com:pem`
 
 ## Things that are not planned
 
